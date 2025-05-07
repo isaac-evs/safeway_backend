@@ -6,3 +6,5 @@ passlib[bcrypt]
 python-jose
 psycopg2-binary
 geoalchemy2
+pydantic[email]
+python-multipart

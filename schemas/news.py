@@ -17,6 +17,7 @@ class NewsOut(NewsBase):
     id: int
     news_source: str
     processed_at: datetime
+    coordinates: Optional[str]
 
     class Config:
         orm_mode = True
