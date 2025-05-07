@@ -14,13 +14,13 @@ def create_news(db: Session, news: news.NewsCreate, username: str):
     return db_news
 
 def get_news(db: Session):
-    return db.query(news.News).all()
+    return db.query(news_model.News).all()
 
 def get_news_by_id(db: Session, news_id: int):
-    return db.query(news.News).filter(news.News.id == news_id).first()
+    return db.query(news_model.News).filter(news_model.News.id == news_id).first()
 
 def get_news_by_source(db: Session, source: str):
-    return db.query(news.News).filter(news.News.news_source == source).all()
+    return db.query(news_model.News).filter(news_model.News.news_source == source).all()
 
 def update_news(db: Session, news_id: int, news: news.NewsCreate, username: str):
     db_news = get_news_by_id(db, news_id)
