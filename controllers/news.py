@@ -4,6 +4,7 @@ from schemas import news, user
 from utils.auth import get_password_hash
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException
+from geoalchemy2.shape import to_shape
 
 def create_news(db: Session, news: news.NewsCreate, username: str):
     db_news = news_model.News(**news.model_dump(), news_source=username)
@@ -14,13 +15,22 @@ def create_news(db: Session, news: news.NewsCreate, username: str):
     return db_news
 
 def get_news(db: Session):
-    return db.query(news_model.News).all()
+    news = db.query(news_model.News).all()
+    for n in news:
+        n.coordinates = to_shape(n.coordinates).wkt if n.coordinates else None
+    return news
 
 def get_news_by_id(db: Session, news_id: int):
-    return db.query(news_model.News).filter(news_model.News.id == news_id).first()
+    news = db.query(news_model.News).filter(news_model.News.id == news_id).first()
+    if news:
+        news.coordinates = to_shape(news.coordinates).wkt if news.coordinates else None
+    return news
 
 def get_news_by_source(db: Session, source: str):
-    return db.query(news_model.News).filter(news_model.News.news_source == source).all()
+    news = db.query(news_model.News).filter(news_model.News.news_source == source).all()
+    for n in news:
+        n.coordinates = to_shape(n.coordinates).wkt if n.coordinates else None
+    return news
 
 def update_news(db: Session, news_id: int, news: news.NewsCreate, username: str):
     db_news = get_news_by_id(db, news_id)
