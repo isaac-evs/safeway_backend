@@ -131,8 +131,18 @@ jobs:
           aws ec2 create-launch-template-version \
             --launch-template-name ${LAUNCH_TEMPLATE_NAME} \
             --version-description "Automated deployment ${LAUNCH_TEMPLATE_VERSION}" \
-            --source-version 1 \
-            --launch-template-data "{\"UserData\":\"${USER_DATA}\", \"NetworkInterfaces\":[{\"DeviceIndex\":0,\"AssociatePublicIpAddress\":true,\"Groups\":[\"${SECURITY_GROUP_ID}\"]}]}"
+            --launch-template-data "{
+              \"ImageId\":\"ami-04f167a56786e4b09\",
+              \"InstanceType\":\"t2.micro\",
+              \"KeyName\":\"safeway-asg\",
+              \"UserData\":\"${USER_DATA}\",
+              \"NetworkInterfaces\":[{
+                \"DeviceIndex\":0,
+                \"AssociatePublicIpAddress\":true,
+                \"Groups\":[\"sg-078cab6efbbca7f8f\"],
+                \"DeleteOnTermination\":true
+              }]
+            }"
 
           # Update the launch template default version
           aws ec2 modify-launch-template \
