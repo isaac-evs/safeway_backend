@@ -100,6 +100,7 @@ jobs:
           IMAGE_TAG: ${{ needs.package.outputs.image-tag }}
           LAUNCH_TEMPLATE_NAME: safeway-backend-template
           LAUNCH_TEMPLATE_VERSION: ${{ github.run_number }}
+          SECURITY_GROUP_ID: "alb-sg-for-http-htpps-ssh-requests" # Add your security group ID here
         run: |
           # Create user data script
           cat > user-data.sh << 'EOF'
@@ -126,12 +127,12 @@ jobs:
           # Encode user data to base64
           USER_DATA=$(base64 -w 0 user-data.sh)
 
-          # Create a new launch template version with public IP
+          # Create a new launch template version with public IP and security group
           aws ec2 create-launch-template-version \
             --launch-template-name ${LAUNCH_TEMPLATE_NAME} \
             --version-description "Automated deployment ${LAUNCH_TEMPLATE_VERSION}" \
             --source-version 1 \
-            --launch-template-data "{\"UserData\":\"${USER_DATA}\", \"NetworkInterfaces\":[{\"DeviceIndex\":0,\"AssociatePublicIpAddress\":true}]}"
+            --launch-template-data "{\"UserData\":\"${USER_DATA}\", \"NetworkInterfaces\":[{\"DeviceIndex\":0,\"AssociatePublicIpAddress\":true, \"Groups\":[\"${SECURITY_GROUP_ID}\"]}]}"
 
           # Update the launch template default version
           aws ec2 modify-launch-template \
