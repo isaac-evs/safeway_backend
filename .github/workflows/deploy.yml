@@ -94,7 +94,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Create IAM Role for EC2 if it doesn't exist
+      - name: Create or Update IAM Role for EC2
         run: |
           # Check if role exists
           if ! aws iam get-role --role-name EC2ECRAccessRole 2>/dev/null; then
@@ -115,9 +115,6 @@ jobs:
             # Create the role
             aws iam create-role --role-name EC2ECRAccessRole --assume-role-policy-document file://trust-policy.json
 
-            # Attach policy to allow ECR access
-            aws iam attach-role-policy --role-name EC2ECRAccessRole --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-
             # Create instance profile and add role to it
             aws iam create-instance-profile --instance-profile-name EC2ECRAccessProfile
             aws iam add-role-to-instance-profile --instance-profile-name EC2ECRAccessProfile --role-name EC2ECRAccessRole
@@ -125,6 +122,43 @@ jobs:
             # Wait for role to propagate
             sleep 10
           fi
+
+          # Create policy for Parameter Store access
+          echo '{
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ssm:GetParameter",
+                  "ssm:GetParameters",
+                  "ssm:GetParametersByPath"
+                ],
+                "Resource": "arn:aws:ssm:us-east-2:135808947723:parameter/safeway-backend/*"
+              }
+            ]
+          }' > parameter-store-policy.json
+
+          # Create policy for ECR access
+          echo '{
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ecr:GetAuthorizationToken",
+                  "ecr:BatchCheckLayerAvailability",
+                  "ecr:GetDownloadUrlForLayer",
+                  "ecr:BatchGetImage"
+                ],
+                "Resource": "*"
+              }
+            ]
+          }' > ecr-policy.json
+
+          # Create or update the policies
+          aws iam put-role-policy --role-name EC2ECRAccessRole --policy-name ParameterStoreAccess --policy-document file://parameter-store-policy.json
+          aws iam put-role-policy --role-name EC2ECRAccessRole --policy-name ECRAccess --policy-document file://ecr-policy.json
 
       - name: Create new Launch Template version
         env:
@@ -201,11 +235,29 @@ jobs:
           docker stop safeway-backend || true
           docker rm safeway-backend || true
 
+          echo "Retrieving environment variables from Parameter Store..."
+          # Get parameters from SSM Parameter Store
+          DATABASE_URL=$(/usr/local/bin/aws ssm get-parameter --name "/safeway-backend/DATABASE_URL" --with-decryption --query "Parameter.Value" --output text --region us-east-2)
+          SECRET_KEY=$(/usr/local/bin/aws ssm get-parameter --name "/safeway-backend/SECRET_KEY" --with-decryption --query "Parameter.Value" --output text --region us-east-2)
+
           echo "Running container..."
-          # Run the new container
-          docker run -d --name safeway-backend -p 80:8000 135808947723.dkr.ecr.us-east-2.amazonaws.com/safeway-backend:latest
+          # Run the new container with environment variables
+          docker run -d --name safeway-backend -p 80:8000 \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e SECRET_KEY="$SECRET_KEY" \
+            135808947723.dkr.ecr.us-east-2.amazonaws.com/safeway-backend:latest
+
           if [ $? -ne 0 ]; then
-            echo "Failed to start container"
+            echo "Failed to start container with environment variables"
+            # Try running with debugging to capture errors
+            docker run --name safeway-backend-debug \
+              -e DATABASE_URL="$DATABASE_URL" \
+              -e SECRET_KEY="$SECRET_KEY" \
+              135808947723.dkr.ecr.us-east-2.amazonaws.com/safeway-backend:latest > /var/log/container-debug.log 2>&1 &
+
+            sleep 5
+            echo "Debug container logs:"
+            cat /var/log/container-debug.log
             exit 1
           fi
 
