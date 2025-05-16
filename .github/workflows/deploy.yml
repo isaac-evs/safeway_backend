@@ -134,7 +134,7 @@ jobs:
           LAUNCH_TEMPLATE_VERSION: ${{ github.run_number }}
           SECURITY_GROUP_ID: "sg-078cab6efbbca7f8f"
         run: |
-          # Create user data script with improved error handling and AWS CLI installation
+          # Create user data script with improved error handling and correct package names for Ubuntu 24.04
           cat > user-data.sh << 'EOF'
           #!/bin/bash
 
@@ -142,24 +142,51 @@ jobs:
           exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
           echo "Starting user data script execution"
 
-          # Update and install required packages
+          # Update and install packages with proper error handling
+          echo "Updating package lists..."
           apt-get update
-          apt-get install -y docker.io awscli
+
+          echo "Installing Docker..."
+          apt-get install -y docker.io
+          if [ $? -ne 0 ]; then
+            echo "Docker installation failed, trying alternative approach"
+            # Try snap as fallback
+            apt-get install -y snapd
+            snap install docker
+          fi
+
+          echo "Starting Docker service..."
           systemctl start docker
           systemctl enable docker
 
+          echo "Installing AWS CLI..."
+          # Install AWS CLI v2 using the official method
+          apt-get install -y unzip curl
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          ./aws/install
+
+          # Verify installation
+          /usr/local/bin/aws --version
+
           # Add ubuntu user to docker group
+          groupadd -f docker
           usermod -aG docker ubuntu
 
-          # Verify AWS CLI is installed
-          aws --version
+          # Wait for AWS CLI and Docker to be fully available
+          sleep 5
 
           echo "Logging in to ECR..."
           # Login to ECR with error handling
-          aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 135808947723.dkr.ecr.us-east-2.amazonaws.com
+          /usr/local/bin/aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 135808947723.dkr.ecr.us-east-2.amazonaws.com
           if [ $? -ne 0 ]; then
-            echo "Failed to login to ECR"
-            exit 1
+            echo "Failed to login to ECR, retrying after short delay"
+            sleep 10
+            /usr/local/bin/aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 135808947723.dkr.ecr.us-east-2.amazonaws.com
+            if [ $? -ne 0 ]; then
+              echo "ECR login failed again"
+              exit 1
+            fi
           fi
 
           echo "Pulling latest image..."
