@@ -126,12 +126,12 @@ jobs:
           # Encode user data to base64
           USER_DATA=$(base64 -w 0 user-data.sh)
 
-          # Create a new launch template version
+          # Create a new launch template version with public IP
           aws ec2 create-launch-template-version \
             --launch-template-name ${LAUNCH_TEMPLATE_NAME} \
             --version-description "Automated deployment ${LAUNCH_TEMPLATE_VERSION}" \
             --source-version 1 \
-            --launch-template-data "{\"UserData\":\"${USER_DATA}\"}"
+            --launch-template-data "{\"UserData\":\"${USER_DATA}\", \"NetworkInterfaces\":[{\"DeviceIndex\":0,\"AssociatePublicIpAddress\":true}]}"
 
           # Update the launch template default version
           aws ec2 modify-launch-template \
