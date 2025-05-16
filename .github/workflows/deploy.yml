@@ -94,6 +94,146 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
+      - name: Create IAM Role for EC2 if it doesn't exist
+        run: |
+          # Check if role exists
+          if ! aws iam get-role --role-name EC2ECRAccessRole 2>/dev/null; then
+            # Create the role
+            echo '{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Service": "ec2.amazonaws.com"
+                  },
+                  "Action": "sts:AssumeRole"
+                }
+              ]
+            }' > trust-policy.json
+
+            # Create the role
+            aws iam create-role --role-name EC2ECRAccessRole --assume-role-policy-document file://trust-policy.json
+
+            # Attach policy to allow ECR access
+            aws iam attach-role-policy --role-name EC2ECRAccessRole --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+            # Create instance profile and add role to it
+            aws iam create-instance-profile --instance-profile-name EC2ECRAccessProfile
+            aws iam add-role-to-instance-profile --instance-profile-name EC2ECRAccessProfile --role-name EC2ECRAccessRole
+
+            # Wait for role to propagate
+            sleep 10
+          fi
+
+      - name: Create new Launch Template version
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ needs.package.outputs.image-tag }}
+          LAUNCH_TEMPLATE_NAME: safeway-backend-template
+          LAUNCH_TEMPLATE_VERSION: ${{ github.run_number }}
+          SECURITY_GROUP_ID: "sg-078cab6efbbca7f8f"
+        run: |
+          # Create user data script with improved error handling and AWS CLI installation
+          cat > user-data.sh << 'EOF'
+          #!/bin/bash
+
+          # Enable error logging
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+          echo "Starting user data script execution"
+
+          # Update and install required packages
+          apt-get update
+          apt-get install -y docker.io awscli
+          systemctl start docker
+          systemctl enable docker
+
+          # Add ubuntu user to docker group
+          usermod -aG docker ubuntu
+
+          # Verify AWS CLI is installed
+          aws --version
+
+          echo "Logging in to ECR..."
+          # Login to ECR with error handling
+          aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 135808947723.dkr.ecr.us-east-2.amazonaws.com
+          if [ $? -ne 0 ]; then
+            echo "Failed to login to ECR"
+            exit 1
+          fi
+
+          echo "Pulling latest image..."
+          # Pull the latest image with error handling
+          docker pull 135808947723.dkr.ecr.us-east-2.amazonaws.com/safeway-backend:latest
+          if [ $? -ne 0 ]; then
+            echo "Failed to pull image"
+            exit 1
+          fi
+
+          # Stop any existing container
+          docker stop safeway-backend || true
+          docker rm safeway-backend || true
+
+          echo "Running container..."
+          # Run the new container
+          docker run -d --name safeway-backend -p 80:8000 135808947723.dkr.ecr.us-east-2.amazonaws.com/safeway-backend:latest
+          if [ $? -ne 0 ]; then
+            echo "Failed to start container"
+            exit 1
+          fi
+
+          echo "Container started successfully"
+          EOF
+
+          # Encode user data to base64
+          USER_DATA=$(base64 -w 0 user-data.sh)
+
+          # Create a new launch template version with public IP, security group, and IAM profile
+          aws ec2 create-launch-template-version \
+            --launch-template-name ${LAUNCH_TEMPLATE_NAME} \
+            --version-description "Automated deployment ${LAUNCH_TEMPLATE_VERSION}" \
+            --launch-template-data "{
+              \"ImageId\":\"ami-04f167a56786e4b09\",
+              \"InstanceType\":\"t2.micro\",
+              \"KeyName\":\"safeway-asg\",
+              \"UserData\":\"${USER_DATA}\",
+              \"NetworkInterfaces\":[{
+                \"DeviceIndex\":0,
+                \"AssociatePublicIpAddress\":true,
+                \"Groups\":[\"${SECURITY_GROUP_ID}\"],
+                \"DeleteOnTermination\":true
+              }],
+              \"IamInstanceProfile\": {
+                \"Name\": \"EC2ECRAccessProfile\"
+              }
+            }"
+
+          # Update the launch template default version
+          aws ec2 modify-launch-template \
+            --launch-template-name ${LAUNCH_TEMPLATE_NAME} \
+            --default-version \$Latest
+
+      - name: Start Instance Refresh
+        run: |
+          # Start an instance refresh to replace all instances
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name ${{ env.ASG_NAME }} \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}':
+    name: Deploy to Auto Scaling Group
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
       - name: Create new Launch Template version
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
