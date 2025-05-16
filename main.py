@@ -4,12 +4,15 @@ from database import Base, engine
 from fastapi.middleware.cors import CORSMiddleware
 
 Base.metadata.create_all(bind=engine)
-
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://safestway.click", "https://www.safestway.click"],
+    allow_origins=[
+        "https://safestway.click",
+        "https://www.safestway.click",
+        "https://master.d1hk0v12sufk85.amplifyapp.com"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
