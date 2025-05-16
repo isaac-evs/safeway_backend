@@ -1,0 +1,146 @@
+name: Build, Package and Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: safeway-backend
+  ASG_NAME: asg-ec2-instances-safeway
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Test with pytest
+        run: |
+          pip install pytest
+          # Run tests if you have them
+          # pytest
+
+  package:
+    name: Package and Push to ECR
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.build-image.outputs.image-tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build a docker container and push it to ECR
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+          # Also tag as latest
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "::set-output name=image-tag::$IMAGE_TAG"
+
+  deploy:
+    name: Deploy to Auto Scaling Group
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Create new Launch Template version
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ needs.package.outputs.image-tag }}
+          LAUNCH_TEMPLATE_NAME: safeway-backend-template
+          LAUNCH_TEMPLATE_VERSION: ${{ github.run_number }}
+        run: |
+          # Create user data script
+          cat > user-data.sh << 'EOF'
+          #!/bin/bash
+          apt-get update
+          apt-get install -y docker.io
+          systemctl start docker
+          systemctl enable docker
+
+          # Login to ECR
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+
+          # Pull the latest image
+          docker pull ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+          # Stop any existing container
+          docker stop safeway-backend || true
+          docker rm safeway-backend || true
+
+          # Run the new container
+          docker run -d --name safeway-backend -p 80:8000 ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          EOF
+
+          # Encode user data to base64
+          USER_DATA=$(base64 -w 0 user-data.sh)
+
+          # Create a new launch template version
+          aws ec2 create-launch-template-version \
+            --launch-template-name ${LAUNCH_TEMPLATE_NAME} \
+            --version-description "Automated deployment ${LAUNCH_TEMPLATE_VERSION}" \
+            --source-version 1 \
+            --launch-template-data "{\"UserData\":\"${USER_DATA}\"}"
+
+          # Update the launch template default version
+          aws ec2 modify-launch-template \
+            --launch-template-name ${LAUNCH_TEMPLATE_NAME} \
+            --default-version \$Latest
+
+      - name: Start Instance Refresh
+        run: |
+          # Start an instance refresh to replace all instances
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name ${{ env.ASG_NAME }} \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}'
